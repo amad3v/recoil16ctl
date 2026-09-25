@@ -1,0 +1,26 @@
+[package]
+name = "recoil16ctl"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Control the PCSpecialist Recoil 16 AMD extras: charge limit, lightbar, power profile, Fn/Super lock, screen rotation"
+license = "GPL-2.0-only"
+repository = "https://github.com/amad3v/recoil16"
+publish = false
+
+[dependencies]
+anyhow = { version = "1.0.104" }
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete ={version= "4.6.11"}
+clap_mangen = {version="0.3.3"}
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+overflow-checks = true

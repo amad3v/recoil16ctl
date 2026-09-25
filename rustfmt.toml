@@ -1,0 +1,8 @@
+# imports_granularity = "Crate"
+# group_imports = "StdExternalCrate"
+reorder_imports = true
+# imports_layout = "Vertical"
+tab_spaces = 2
+reorder_modules = true
+# reorder_impl_items = true
+remove_nested_parens = true
