@@ -1,4 +1,4 @@
-//! The built-in panel: show its orientation and flip it 180° (KDE Plasma,
+//! The built-in panel: orientation (show, flip 180°) and current mode (KDE Plasma,
 //! kscreen-doctor).
 //!
 //! Must run as the desktop user: kscreen-doctor talks to the user's session.
@@ -37,8 +37,8 @@ impl fmt::Display for Panel {
   }
 }
 
-/// The built-in panel and its current rotation.
-pub fn current() -> Result<Panel> {
+/// `kscreen-doctor -o` output (needs the user's KDE session).
+fn kscreen_output() -> Result<String> {
   if sys::effective_uid() == Some(0) {
     bail!("run 'recoil16ctl screen' as your desktop user, not with sudo");
   }
@@ -52,8 +52,52 @@ pub fn current() -> Result<Panel> {
       String::from_utf8_lossy(&out.stderr).trim()
     );
   }
-  find_panel(&String::from_utf8_lossy(&out.stdout))
-    .context("built-in panel not found in kscreen-doctor output")
+  Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The built-in panel and its current rotation.
+pub fn current() -> Result<Panel> {
+  find_panel(&kscreen_output()?).context("built-in panel not found in kscreen-doctor output")
+}
+
+/// The built-in panel's current mode, e.g. "2560x1600 @ 60 Hz".
+pub fn mode() -> Result<String> {
+  panel_mode(&kscreen_output()?).context("built-in panel mode not found in kscreen-doctor output")
+}
+
+/// The current mode of the output marked "Panel" in `kscreen-doctor -o` output.
+pub fn panel_mode(output: &str) -> Option<String> {
+  let text = strip_ansi(output);
+  let mut is_panel = false;
+  let mut mode = None;
+  // a sentinel "Output:" closes the last output
+  for line in text.lines().chain(std::iter::once("Output:")) {
+    let trimmed = line.trim();
+    if line.starts_with("Output:") {
+      if is_panel {
+        return mode;
+      }
+      is_panel = false;
+      mode = None;
+    } else if trimmed == "Panel" {
+      is_panel = true;
+    } else if let Some(modes) = trimmed.strip_prefix("Modes:") {
+      mode = current_mode(modes);
+    }
+  }
+  None
+}
+
+/// The mode marked `*` in a `Modes:` list such as "1:2560x1600@240.00*!".
+fn current_mode(modes: &str) -> Option<String> {
+  let m = modes.split_whitespace().find(|m| m.contains('*'))?;
+  let m = m
+    .split_once(':')
+    .map_or(m, |(_, rest)| rest)
+    .trim_end_matches(['*', '!']);
+  let (resolution, hz) = m.split_once('@')?;
+  let hz: f64 = hz.parse().ok()?;
+  Some(format!("{resolution} @ {hz:.0} Hz"))
 }
 
 /// Flip the panel between normal and inverted; returns its new state.
@@ -148,5 +192,25 @@ mod tests {
   #[test]
   fn no_panel_means_none() {
     assert_eq!(find_panel("Output: 1 HDMI-A-1 x\n\tRotation: 1\n"), None);
+  }
+
+  #[test]
+  fn finds_the_panels_current_mode() {
+    assert_eq!(panel_mode(SAMPLE).as_deref(), Some("2560x1600 @ 240 Hz"));
+  }
+
+  #[test]
+  fn mode_line_may_come_before_the_panel_marker() {
+    let out = "Output: 1 eDP-1 x\n\tenabled\n\tModes:  1:2560x1600@240.00!  2:2560x1600@60.00*\n\tPanel\n\
+               Output: 2 HDMI-A-1 y\n\tModes:  1:1920x1080@60.00*!\n";
+    assert_eq!(panel_mode(out).as_deref(), Some("2560x1600 @ 60 Hz"));
+  }
+
+  #[test]
+  fn no_current_mode_means_none() {
+    assert_eq!(
+      panel_mode("Output: 1 eDP-1 x\n\tPanel\n\tModes:  1:2560x1600@240.00!\n"),
+      None
+    );
   }
 }

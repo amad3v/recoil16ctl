@@ -97,6 +97,33 @@ impl Sys {
     }
   }
 
+  /// Like [`Sys::read_opt`], but any error is `None` as well: for best-effort
+  /// values where a missing or unreadable file only means "unknown".
+  pub fn get(&self, path: &str) -> Option<String> {
+    self.read_opt(path).ok().flatten()
+  }
+
+  /// Names of the entries of `dir`, sorted; empty if it can't be read.
+  pub fn list(&self, dir: &str) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(self.path(dir)) else {
+      return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+      .flatten()
+      .map(|e| e.file_name().to_string_lossy().into_owned())
+      .collect();
+    names.sort();
+    names
+  }
+
+  /// Target of the symlink at `path` as written in the link (not resolved);
+  /// `None` if it isn't a symlink or can't be read.
+  pub fn read_link(&self, path: &str) -> Option<String> {
+    fs::read_link(self.path(path))
+      .ok()
+      .map(|t| t.to_string_lossy().into_owned())
+  }
+
   /// Ask udev to re-read its rules; only meaningful on the real system.
   pub fn reload_udev(&self) {
     if self.root != Path::new("/") {
@@ -167,5 +194,54 @@ pub mod testutil {
     let full = root.join(path.trim_start_matches('/'));
     std::fs::create_dir_all(full.parent().unwrap()).unwrap();
     std::fs::write(full, contents).unwrap();
+  }
+
+  /// Create `root/path` as a symlink to `target` (taken literally), creating parents.
+  pub fn link(root: &std::path::Path, path: &str, target: &str) {
+    let full = root.join(path.trim_start_matches('/'));
+    std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, full).unwrap();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::sys::testutil::{link, put, tempdir};
+
+  #[test]
+  fn lists_sorted_names_and_empty_for_missing_dirs() {
+    let root = tempdir();
+    put(&root, "/d/b", "");
+    put(&root, "/d/a", "");
+    let sys = Sys::with_root(&root);
+    assert_eq!(sys.list("/d"), ["a", "b"]);
+    assert!(sys.list("/missing").is_empty());
+  }
+
+  #[test]
+  fn reads_link_targets_as_written() {
+    let root = tempdir();
+    link(&root, "/proc/1/fd/3", "/dev/nvidia0");
+    link(&root, "/dev/dri/by-path/pci-x-render", "../renderD129");
+    let sys = Sys::with_root(&root);
+    assert_eq!(
+      sys.read_link("/proc/1/fd/3").as_deref(),
+      Some("/dev/nvidia0")
+    );
+    assert_eq!(
+      sys.read_link("/dev/dri/by-path/pci-x-render").as_deref(),
+      Some("../renderD129")
+    );
+    assert_eq!(sys.read_link("/proc/1/fd/4"), None);
+  }
+
+  #[test]
+  fn get_is_trimmed_or_none() {
+    let root = tempdir();
+    put(&root, "/f", "auto\n");
+    let sys = Sys::with_root(&root);
+    assert_eq!(sys.get("/f").as_deref(), Some("auto"));
+    assert_eq!(sys.get("/nope"), None);
   }
 }

@@ -121,7 +121,7 @@ fn evaluate(sys: &Sys, release: &str, probes: &Probes) -> Vec<Item> {
   ]
 }
 
-fn item(name: &'static str, result: Result<String>, on_error: Level) -> Item {
+pub(crate) fn item(name: &'static str, result: Result<String>, on_error: Level) -> Item {
   match result {
     Ok(detail) => Item {
       name,
@@ -136,10 +136,18 @@ fn item(name: &'static str, result: Result<String>, on_error: Level) -> Item {
   }
 }
 
-fn warn(name: &'static str, detail: impl Into<String>) -> Item {
+pub(crate) fn warn(name: &'static str, detail: impl Into<String>) -> Item {
   Item {
     name,
     level: Level::Warn,
+    detail: detail.into(),
+  }
+}
+
+pub(crate) fn ok(name: &'static str, detail: impl Into<String>) -> Item {
+  Item {
+    name,
+    level: Level::Pass,
     detail: detail.into(),
   }
 }

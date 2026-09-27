@@ -1,17 +1,26 @@
 //! recoil16ctl: control the `PCSpecialist Recoil 16 AMD` extras provided by the
 //! recoil16 drivers (charge modes, battery health, lightbar, power profile, Fn/Super lock,
-//! screen rotation).
+//! screen rotation) and check NVIDIA GPU power, app offloading and battery draw.
 
 mod battery;
 mod check;
+mod check_power;
+mod gpu;
+mod gpu_test;
 mod lightbar;
 mod locks;
+mod power;
 mod profile;
 mod screen;
 mod sensors;
 mod sys;
 
-use std::{io, process::ExitCode};
+use std::{
+  io,
+  os::unix::process::CommandExt,
+  process::{Command, ExitCode},
+  thread,
+};
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -76,6 +85,23 @@ enum Cmd {
     #[command(subcommand)]
     cmd: Option<ScreenCmd>,
   },
+  /// NVIDIA GPU: power state, driver, which of your apps use it; run an app on it
+  Gpu {
+    #[command(subcommand)]
+    cmd: Option<GpuCmd>,
+  },
+  /// Battery draw (5 s average), time left, NVIDIA GPU and panel state
+  Power {
+    /// Keep going: a new 5 s average every 2 s, until Ctrl+C
+    #[arg(long)]
+    watch: bool,
+    #[arg(
+      long,
+      value_name = "NAME",
+      help = "Only this battery (a name in /sys/class/power_supply, e.g. BAT0)"
+    )]
+    battery: Option<String>,
+  },
   /// Print shell completions
   Completions {
     #[arg(value_enum)]
@@ -101,8 +127,7 @@ enum BatteryCmd {
   },
   /// Remove the boot rule (and any charge-limit rule from 1.0.0)
   ClearRule,
-  /// Removed in 1.1.0: use `battery mode`
-  #[command(hide = true)]
+  #[command(hide = true, about = "Removed in 1.1.0: use 'battery mode'")]
   Limit {
     #[arg(num_args = 0.., allow_hyphen_values = true)]
     args: Vec<String>,
@@ -129,6 +154,25 @@ enum ScreenCmd {
   Rotate,
 }
 
+#[derive(Subcommand)]
+enum GpuCmd {
+  #[command(
+    about = "Run a program on the NVIDIA GPU (PRIME render offload), e.g. gpu run -- freecad"
+  )]
+  Run {
+    /// The program and its arguments
+    #[arg(
+      required = true,
+      trailing_var_arg = true,
+      allow_hyphen_values = true,
+      value_name = "COMMAND"
+    )]
+    command: Vec<String>,
+  },
+  /// Wake the NVIDIA GPU and check offloaded apps really use it (desktop session; mesa-utils, vulkan-tools)
+  Test,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum ProfileArg {
   LowPower,
@@ -140,7 +184,7 @@ enum ProfileArg {
 
 fn main() -> ExitCode {
   match run(Cli::parse()) {
-    Ok(()) => ExitCode::SUCCESS,
+    Ok(code) => code,
     Err(e) => {
       eprintln!("recoil16ctl: {e:#}");
       ExitCode::FAILURE
@@ -148,7 +192,9 @@ fn main() -> ExitCode {
   }
 }
 
-fn run(cli: Cli) -> Result<()> {
+/// Run the command. `gpu run` replaces this process with the program, so it
+/// only returns (127 or 126) when the program can't be started.
+fn run(cli: Cli) -> Result<ExitCode> {
   let sys = Sys::new();
   match cli.cmd.unwrap_or(Cmd::Status) {
     Cmd::Status => {
@@ -224,6 +270,14 @@ fn run(cli: Cli) -> Result<()> {
       println!("screen {panel}");
       Ok(())
     }
+    Cmd::Gpu { cmd: None } => gpu_cmd(&sys),
+    Cmd::Gpu {
+      cmd: Some(GpuCmd::Run { command }),
+    } => return Ok(gpu_run(&sys, &command)),
+    Cmd::Gpu {
+      cmd: Some(GpuCmd::Test),
+    } => gpu_test_cmd(),
+    Cmd::Power { watch, battery } => power_cmd(&sys, watch, battery.as_deref()),
     Cmd::Check => check_cmd(&sys),
     Cmd::Man { dir } => {
       std::fs::create_dir_all(&dir)?;
@@ -234,7 +288,8 @@ fn run(cli: Cli) -> Result<()> {
       clap_complete::generate(shell, &mut Cli::command(), "recoil16ctl", &mut io::stdout());
       Ok(())
     }
-  }
+  }?;
+  Ok(ExitCode::SUCCESS)
 }
 
 fn lightbar_cmd(sys: &Sys, args: &[String], temp: bool) -> Result<()> {
@@ -258,7 +313,10 @@ fn lightbar_cmd(sys: &Sys, args: &[String], temp: bool) -> Result<()> {
 
 const EXAMPLES: &str = "Examples:
   recoil16ctl                              status of everything
-  recoil16ctl check                        verify the installation
+  recoil16ctl check                        verify the installation and power settings
+  recoil16ctl power --watch                battery draw and time left, every 2 s
+  recoil16ctl gpu                          is the NVIDIA GPU asleep? which apps use it?
+  recoil16ctl gpu run -- freecad           run an app on the NVIDIA GPU
   sudo recoil16ctl battery mode long-life  charge to ~93% (lower voltage), also after reboots
   sudo recoil16ctl lightbar blue 60        blue lightbar at 60%, also after reboots
   sudo recoil16ctl profile cycle           next power mode, like the mode button
@@ -270,6 +328,10 @@ which must run as the desktop user.";
 fn check_cmd(sys: &Sys) -> Result<()> {
   let items = check::run(sys);
   for item in &items {
+    println!("{item}");
+  }
+  println!("\nPower:");
+  for item in check_power::run(sys) {
     println!("{item}");
   }
   println!("\nBy hand:");
@@ -294,6 +356,108 @@ fn lock_cmd(sys: &Sys, lock: Lock, state: Option<OnOff>) -> Result<()> {
   Ok(())
 }
 
+/// Replace this process with `command`, offloaded to the NVIDIA GPU. Returns
+/// only if the program can't be started.
+fn gpu_run(sys: &Sys, command: &[String]) -> ExitCode {
+  if let Err(e) = gpu::find(sys) {
+    eprintln!("recoil16ctl: warning: {e:#}; running on the default GPU");
+  }
+  let err = Command::new(&command[0])
+    .args(&command[1..])
+    .envs(gpu::OFFLOAD_ENV)
+    .exec();
+  let (reason, code) = exec_failure(&err);
+  eprintln!("recoil16ctl: {}: {reason}", command[0]);
+  ExitCode::from(code)
+}
+
+/// Why `exec` failed and the exit status, by shell convention: 127 command
+/// not found, 126 found but not runnable.
+fn exec_failure(err: &io::Error) -> (String, u8) {
+  match err.kind() {
+    io::ErrorKind::NotFound => ("not found".to_owned(), 127),
+    _ => (err.to_string(), 126),
+  }
+}
+
+fn gpu_cmd(sys: &Sys) -> Result<()> {
+  let g = gpu::find(sys)?;
+  println!("{g}");
+  let users = gpu::users(sys, &g);
+  let scope = if crate::sys::effective_uid() == Some(0) {
+    "all processes"
+  } else {
+    "your processes only; sudo includes all"
+  };
+  let (apps, displays): (Vec<_>, Vec<_>) = users.iter().partition(|u| u.role == gpu::Role::App);
+  let list = if apps.is_empty() {
+    "nothing".to_owned()
+  } else {
+    apps
+      .iter()
+      .map(|u| format!("{} (pid {})", u.name, u.pid))
+      .collect::<Vec<_>>()
+      .join(", ")
+  };
+  println!("{}", gpu::row("using it", list));
+  for d in &displays {
+    println!(
+      "{}",
+      gpu::row(
+        "display",
+        format_args!(
+          "{} (pid {}): has the NVIDIA display device open; this doesn't keep the GPU awake",
+          d.name, d.pid
+        )
+      )
+    );
+  }
+  println!("{}", gpu::row("", format_args!("({scope})")));
+  Ok(())
+}
+
+fn gpu_test_cmd() -> Result<()> {
+  let results = gpu_test::run()?;
+  let mut failed = false;
+  for (name, verdict) in &results {
+    let (mark, text) = match verdict {
+      gpu_test::Verdict::Pass(t) => ("ok  ", t),
+      gpu_test::Verdict::Fail(t) => {
+        failed = true;
+        ("FAIL", t)
+      }
+      gpu_test::Verdict::Skipped(t) => ("skip", t),
+    };
+    println!("[{mark}] {name:<8} {text}");
+  }
+  gpu_test::ensure_ran(&results)?;
+  println!("\nThe NVIDIA GPU was woken for the test; it suspends again about 20 s later.");
+  if failed {
+    bail!("offload test failed");
+  }
+  Ok(())
+}
+
+fn power_cmd(sys: &Sys, watch: bool, only: Option<&str>) -> Result<()> {
+  let names = power::select(sys, only)?;
+  let mut window = power::Window::default();
+  loop {
+    let sample = power::sample(sys, &names)?;
+    if window.push(&sample.status, sample.combined) {
+      let avg = window.average().unwrap_or(sample.combined);
+      println!(
+        "{}",
+        power::report(sys, &sample, avg, screen::mode().ok().as_deref())
+      );
+      if !watch {
+        return Ok(());
+      }
+      println!();
+    }
+    thread::sleep(power::INTERVAL);
+  }
+}
+
 /// One line per feature; a missing driver shows up as "n/a" instead of failing.
 fn status(sys: &Sys) {
   let line = |label: &str, value: Result<String>| match value {
@@ -312,6 +476,7 @@ fn status(sys: &Sys) {
     "super key",
     locks::get(sys, Lock::SuperKey).map(|s| s.to_string()),
   );
+  line("gpu", gpu::find(sys).map(|g| g.summary()));
   line("sensors", sensors::fans_and_temps(sys));
 }
 
@@ -326,6 +491,31 @@ mod tests {
         .lines()
         .any(|l| l == expected),
       "Cargo.toml version and dkms.conf PACKAGE_VERSION differ"
+    );
+  }
+
+  #[test]
+  fn exec_failures_map_to_shell_exit_codes() {
+    use std::io;
+    assert_eq!(
+      super::exec_failure(&io::Error::from(io::ErrorKind::NotFound)),
+      ("not found".to_owned(), 127)
+    );
+    let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+    assert_eq!(super::exec_failure(&denied), (denied.to_string(), 126));
+  }
+
+  #[test]
+  fn offload_env_is_the_switcheroo_set() {
+    let keys: Vec<&str> = crate::gpu::OFFLOAD_ENV.iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+      keys,
+      [
+        "__NV_PRIME_RENDER_OFFLOAD",
+        "__GLX_VENDOR_LIBRARY_NAME",
+        "__VK_LAYER_NV_optimus",
+        "VK_LOADER_DRIVERS_SELECT"
+      ]
     );
   }
 }
