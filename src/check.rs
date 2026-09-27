@@ -152,7 +152,7 @@ fn kernel(release: &str, full: bool) -> Item {
     warn(
       "kernel",
       format!(
-        "{release}: older than {major}.{minor}, so no Fn keys, power profiles, charge limit or Sc"
+        "{release}: older than {major}.{minor}, so no Fn keys, power profiles, charge modes or Sc"
       ),
     )
   }
@@ -197,10 +197,19 @@ fn dkms_installed(status: &str) -> bool {
 
 fn battery_check(sys: &Sys) -> Result<String> {
   let st = battery::status(sys)?;
-  match (st.limit, st.rule) {
-    (None, _) => Err(anyhow!("charge limit not available")),
-    (Some(limit), Some(rule)) if rule != limit => Err(anyhow!(
-      "limit {limit}% but the boot rule sets {rule}% (run: sudo recoil16ctl battery limit {limit})"
+  let Some(mode) = &st.mode else {
+    return Err(anyhow!("charge modes not available"));
+  };
+  if let Some(p) = st.limit_rule {
+    return Err(anyhow!(
+      "leftover {p}% charge-limit rule from 1.0.0 (run: sudo recoil16ctl battery clear-rule)"
+    ));
+  }
+  match st.rule {
+    Some(rule) if rule.sysfs() != mode => Err(anyhow!(
+      "charge mode {mode} but the boot rule sets {} (run: sudo recoil16ctl battery mode {})",
+      rule.sysfs(),
+      rule.cli()
     )),
     _ => Ok(st.to_string()),
   }
@@ -327,25 +336,41 @@ mod tests {
     assert!(!ppd_uses_platform_profile(placeholder));
   }
 
+  fn fake_modes(root: &std::path::Path, types: &str) {
+    let bat = "/sys/class/power_supply/BAT0";
+    put(root, &format!("{bat}/charge_types"), types);
+    put(root, &format!("{bat}/status"), "Charging\n");
+    put(root, &format!("{bat}/capacity"), "69\n");
+    put(root, &format!("{bat}/voltage_now"), "16232000\n");
+  }
+
   #[test]
   fn boot_rule_mismatch_is_reported() {
     let root = tempdir();
-    let bat = "/sys/class/power_supply/BAT0";
+    fake_modes(&root, "[Standard] Trickle Long_Life\n");
     put(
       &root,
-      &format!("{bat}/charge_control_end_threshold"),
-      "80\n",
+      "/etc/udev/rules.d/90-recoil16-charge-mode.rules",
+      "RUN+=\"/bin/sh -c 'echo Long_Life > x'\"\n",
     );
-    put(&root, &format!("{bat}/status"), "Charging\n");
-    put(&root, &format!("{bat}/capacity"), "70\n");
-    put(&root, &format!("{bat}/voltage_now"), "16000000\n");
+    let err = battery_check(&Sys::with_root(&root)).unwrap_err();
+    assert_eq!(
+      err.to_string(),
+      "charge mode Standard but the boot rule sets Long_Life (run: sudo recoil16ctl battery mode long-life)"
+    );
+  }
+
+  #[test]
+  fn leftover_limit_rule_is_reported() {
+    let root = tempdir();
+    fake_modes(&root, "[Standard] Trickle Long_Life\n");
     put(
       &root,
       "/etc/udev/rules.d/90-recoil16-charge-limit.rules",
       "RUN+=\"/bin/sh -c 'echo 90 > x'\"\n",
     );
     let err = battery_check(&Sys::with_root(&root)).unwrap_err();
-    assert!(err.to_string().contains("boot rule sets 90%"));
+    assert!(err.to_string().contains("leftover 90% charge-limit rule"));
   }
 
   #[test]
@@ -375,5 +400,16 @@ mod tests {
     );
     assert_eq!(level("dkms"), Level::Pass);
     assert_eq!(level("power daemon"), Level::Warn, "tool missing");
+  }
+
+  #[test]
+  fn battery_check_accepts_charge_modes() {
+    let root = tempdir();
+    fake_modes(&root, "[Standard] Trickle Long_Life\n");
+    let msg = battery_check(&Sys::with_root(&root)).unwrap();
+    assert_eq!(
+      msg,
+      "69% Charging, 16.23 V, charge mode Standard (no boot rule)"
+    );
   }
 }

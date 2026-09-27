@@ -1,5 +1,5 @@
 //! recoil16ctl: control the `PCSpecialist Recoil 16 AMD` extras provided by the
-//! recoil16 drivers (charge limit, lightbar, power profile, Fn/Super lock,
+//! recoil16 drivers (charge modes, battery health, lightbar, power profile, Fn/Super lock,
 //! screen rotation).
 
 mod battery;
@@ -43,7 +43,7 @@ enum Cmd {
   /// Check the installation and every feature; lists manual checks too
   #[command(visible_alias = "verify")]
   Check,
-  /// Battery state and charge limit
+  /// Battery state, health and charge mode
   Battery {
     #[command(subcommand)]
     cmd: Option<BatteryCmd>,
@@ -88,17 +88,25 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum BatteryCmd {
-  /// Set the charge limit; re-applied at boot unless --temp
-  Limit {
-    /// Stop charging at this percentage (100 = no limit)
-    #[arg(value_parser = clap::value_parser!(u8).range(40..=100))]
-    percent: u8,
+  /// True health, cycle count and charge state (from the EC via uniwill-laptop)
+  Status,
+  /// Set the charge mode; re-applied at boot unless --temp
+  Mode {
+    /// standard (full), long-life (~93%) or trickle (~90%)
+    #[arg(value_enum)]
+    mode: battery::Mode,
     /// Change it for this boot only
     #[arg(long)]
     temp: bool,
   },
-  /// Remove the boot rule (the EC keeps its current limit)
+  /// Remove the boot rule (and any charge-limit rule from 1.0.0)
   ClearRule,
+  /// Removed in 1.1.0: use `battery mode`
+  #[command(hide = true)]
+  Limit {
+    #[arg(num_args = 0.., allow_hyphen_values = true)]
+    args: Vec<String>,
+  },
 }
 
 #[derive(Subcommand)]
@@ -152,9 +160,15 @@ fn run(cli: Cli) -> Result<()> {
       Ok(())
     }
     Cmd::Battery {
-      cmd: Some(BatteryCmd::Limit { percent, temp }),
+      cmd: Some(BatteryCmd::Status),
     } => {
-      battery::set_limit(&sys, percent, !temp)?;
+      println!("{}", battery::health(&sys)?);
+      Ok(())
+    }
+    Cmd::Battery {
+      cmd: Some(BatteryCmd::Mode { mode, temp }),
+    } => {
+      battery::set_mode(&sys, mode, !temp)?;
       println!("{}", battery::status(&sys)?);
       Ok(())
     }
@@ -162,13 +176,20 @@ fn run(cli: Cli) -> Result<()> {
       cmd: Some(BatteryCmd::ClearRule),
     } => {
       let msg = if battery::clear_rule(&sys)? {
-        "boot rule removed"
+        "boot rule removed; the mode resets to Standard at the next boot"
       } else {
         "no boot rule"
       };
-      println!("{msg}; the EC keeps its current limit");
+      println!("{msg}");
       Ok(())
     }
+    Cmd::Battery {
+      cmd: Some(BatteryCmd::Limit { .. }),
+    } => bail!(
+      "the percentage charge limit was removed in 1.1.0: it is a preview feature \
+       of this EC that may damage the battery.\n\
+       Use a charge mode instead: sudo recoil16ctl battery mode long-life (~93%) or trickle (~90%)"
+    ),
     Cmd::Lightbar { args, temp } => lightbar_cmd(&sys, &args, temp),
     Cmd::Profile { profile } => {
       if let Some(p) = profile {
@@ -236,12 +257,12 @@ fn lightbar_cmd(sys: &Sys, args: &[String], temp: bool) -> Result<()> {
 }
 
 const EXAMPLES: &str = "Examples:
-  recoil16ctl                          status of everything
-  recoil16ctl check                    verify the installation
-  sudo recoil16ctl battery limit 80    stop charging at 80%, also after reboots
-  sudo recoil16ctl lightbar blue 60    blue lightbar at 60%, also after reboots
-  sudo recoil16ctl profile cycle       next power mode, like the mode button
-  recoil16ctl screen rotate            flip the screen (as your user)
+  recoil16ctl                              status of everything
+  recoil16ctl check                        verify the installation
+  sudo recoil16ctl battery mode long-life  charge to ~93% (lower voltage), also after reboots
+  sudo recoil16ctl lightbar blue 60        blue lightbar at 60%, also after reboots
+  sudo recoil16ctl profile cycle           next power mode, like the mode button
+  recoil16ctl screen rotate                flip the screen (as your user)
 
 Reading works as a normal user; changing settings needs sudo, except screen,
 which must run as the desktop user.";

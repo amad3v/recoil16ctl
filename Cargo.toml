@@ -1,9 +1,9 @@
 [package]
 name = "recoil16ctl"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "Control the PCSpecialist Recoil 16 AMD extras: charge limit, lightbar, power profile, Fn/Super lock, screen rotation"
+description = "Control the PCSpecialist Recoil 16 AMD extras: charge modes, battery health, lightbar, power profile, Fn/Super lock, screen rotation"
 license = "GPL-2.0-only"
 repository = "https://github.com/amad3v/recoil16"
 publish = false
