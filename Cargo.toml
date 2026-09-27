@@ -1,6 +1,6 @@
 [package]
 name = "recoil16ctl"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.98"
 description = "Control the PCSpecialist Recoil 16 AMD extras: charge modes, battery health, lightbar, power profile, Fn/Super lock, screen rotation"
