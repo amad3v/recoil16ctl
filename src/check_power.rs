@@ -11,7 +11,7 @@ use crate::{
   sys::Sys,
 };
 
-const README: &str = "see README \"Power on the hybrid GPU\"";
+const README: &str = "see the recoil16ctl README, \"Power on the hybrid GPU\"";
 const NOT_READABLE: &str = "power/control not readable";
 const ICD: &str = "/usr/share/vulkan/icd.d";
 /// PCI classes worth runtime-suspending: Ethernet, Wi-Fi, SD host, `NVMe`.

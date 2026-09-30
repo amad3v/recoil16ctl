@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Recoil 16
+Comment=PCSpecialist Recoil 16 hotkeys
+Icon=object-rotate-right
+Actions=RotateScreen
+StartupNotify=false
+X-KDE-GlobalShortcutType=Service
+
+[Desktop Action RotateScreen]
+Name=Rotate Screen 180°
+Exec=recoil16ctl screen rotate
+X-KDE-Shortcuts=Rotate Windows

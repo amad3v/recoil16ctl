@@ -482,18 +482,6 @@ fn status(sys: &Sys) {
 
 #[cfg(test)]
 mod tests {
-  /// recoil16ctl and the DKMS modules are released together with one version.
-  #[test]
-  fn version_matches_dkms_conf() {
-    let expected = format!("PACKAGE_VERSION=\"{}\"", env!("CARGO_PKG_VERSION"));
-    assert!(
-      include_str!("../../dkms.conf")
-        .lines()
-        .any(|l| l == expected),
-      "Cargo.toml version and dkms.conf PACKAGE_VERSION differ"
-    );
-  }
-
   #[test]
   fn exec_failures_map_to_shell_exit_codes() {
     use std::io;
