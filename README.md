@@ -6,6 +6,15 @@
 battery health, lightbar, power profiles, Fn/Super lock, screen rotation,
 NVIDIA GPU power and offload, and battery draw.
 
+> [!WARNING]
+> **Use at your own risk.** Everything in this README was thoroughly tested,
+> physically, on a PCSpecialist Recoil 16 AMD. Nothing was
+> tested on other models, including the TUXEDO Stellaris 16 Gen7 it is based
+> on. recoil16ctl changes charge modes, power and boot settings through the
+> recoil16 drivers. The author takes no responsibility for any damage to your
+> laptop, its battery or your data. The software comes with no warranty
+> (GPL-2.0, sections 11 and 12).
+
 ## Install
 
 ```sh
