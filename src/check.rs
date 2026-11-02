@@ -24,6 +24,10 @@ const MODULES: [&str; 4] = [
 ];
 /// First kernel the bundled uniwill-laptop builds for.
 const UNIWILL_MIN_KERNEL: (u32, u32) = (7, 2);
+/// First `upowerd` that keeps watching `brightness_hw_changed` after startup
+/// (1.91.4 drops the watch, so desktops miss driver-handled Fn+F6/F7).
+const UPOWER_MIN: [u32; 3] = [1, 91, 5];
+const KEY_STEP: &str = "/sys/module/ite8291_mono/parameters/key_step";
 const KDE_SHORTCUT: [&str; 2] = [
   "/usr/share/kglobalaccel/recoil16.desktop",
   "/usr/local/share/kglobalaccel/recoil16.desktop",
@@ -31,7 +35,7 @@ const KDE_SHORTCUT: [&str; 2] = [
 
 /// Things to try by hand after the automated checks.
 pub const MANUAL: [&str; 6] = [
-  "Fn+F6 / Fn+F7: keyboard brightness changes and KDE shows its indicator",
+  "Fn+F6 / Fn+F7: keyboard brightness changes (also at the login screen) and KDE shows its indicator",
   "Mode button: light cycles green -> blue -> purple, KDE battery popup follows",
   "Sc: screen flips 180°, again flips back",
   "Copilot+C / Copilot+V: copy / paste (Copilot is Right Ctrl)",
@@ -67,6 +71,7 @@ impl fmt::Display for Item {
 struct Probes {
   dkms_status: Option<String>,
   powerprofilesctl: Option<String>,
+  upower: Option<String>,
 }
 
 impl Probes {
@@ -81,6 +86,7 @@ impl Probes {
     Self {
       dkms_status: output("dkms", &["status", "recoil16", "-k", release]),
       powerprofilesctl: output("powerprofilesctl", &[]),
+      upower: output("upower", &["--version"]),
     }
   }
 }
@@ -110,6 +116,7 @@ fn evaluate(sys: &Sys, release: &str, probes: &Probes) -> Vec<Item> {
     ),
     power_daemon(probes.powerprofilesctl.as_deref()),
     item("keyboard", keyboard(sys), Level::Fail),
+    kbd_keys(sys, probes.upower.as_deref()),
     item(
       "lightbar",
       lightbar::current(sys).map(|s| s.to_string()),
@@ -261,6 +268,67 @@ fn keyboard(sys: &Sys) -> Result<String> {
   }
 }
 
+/// Who handles Fn+F6/F7, and whether the desktop can follow the driver.
+fn kbd_keys(sys: &Sys, upower: Option<&str>) -> Item {
+  const NAME: &str = "kbd keys";
+  let step = match sys.read_opt(KEY_STEP) {
+    Ok(Some(v)) => v.parse::<i64>().unwrap_or(0),
+    // not loaded: the keyboard check already fails
+    Ok(None) if !sys.path("/sys/module/ite8291_mono").exists() => {
+      return warn(NAME, "ite8291-mono not loaded");
+    }
+    Ok(None) => {
+      return ok(
+        NAME,
+        "Fn+F6/F7 handled by the desktop (driver without key_step)",
+      );
+    }
+    Err(e) => return item(NAME, Err(e), Level::Warn),
+  };
+  if step <= 0 {
+    return ok(NAME, "Fn+F6/F7 handled by the desktop (key_step=0)");
+  }
+  let handled = format!("Fn+F6/F7 handled by the driver (step {step})");
+  match upower.and_then(upower_version) {
+    Some(v) if v.as_slice() >= UPOWER_MIN.as_slice() => {
+      ok(NAME, format!("{handled}, UPower {}", dotted(&v)))
+    }
+    Some(v) => warn(
+      NAME,
+      format!(
+        "{handled}, but UPower {} misses the changes (no indicator); update UPower \
+         to {} or set key_step=0",
+        dotted(&v),
+        dotted(&UPOWER_MIN)
+      ),
+    ),
+    None => warn(
+      NAME,
+      format!("{handled}; upower not found, so desktops won't follow the keys"),
+    ),
+  }
+}
+
+/// The daemon's version from `upower --version` (the client's if the daemon
+/// isn't running).
+fn upower_version(output: &str) -> Option<Vec<u32>> {
+  let version = |prefix: &str| {
+    output.lines().find_map(|l| {
+      l.trim().strip_prefix(prefix).map(|v| {
+        v.trim()
+          .split('.')
+          .map(|n| n.parse().unwrap_or(0))
+          .collect::<Vec<u32>>()
+      })
+    })
+  };
+  version("UPower daemon version").or_else(|| version("UPower client version"))
+}
+
+fn dotted(v: &[u32]) -> String {
+  v.iter().map(u32::to_string).collect::<Vec<_>>().join(".")
+}
+
 fn copilot(sys: &Sys) -> Item {
   match sys.read_opt("/sys/module/copilot_rctrl/parameters/enabled") {
     Ok(Some(v)) if v == "Y" => item(
@@ -337,6 +405,46 @@ mod tests {
   }
 
   #[test]
+  fn parses_upower_version() {
+    let both = "UPower client version 1.91.5\nUPower daemon version 1.91.4\n";
+    assert_eq!(upower_version(both), Some(vec![1, 91, 4]), "daemon wins");
+    assert_eq!(
+      upower_version("UPower client version 1.90.10\n"),
+      Some(vec![1, 90, 10])
+    );
+    assert_eq!(upower_version(""), None);
+    assert!([1, 91, 10] > UPOWER_MIN);
+  }
+
+  #[test]
+  fn kbd_keys_needs_a_fixed_upower_only_when_the_driver_handles_them() {
+    let root = tempdir();
+    let sys = Sys::with_root(&root);
+    let new = Some("UPower daemon version 1.91.5\n");
+    let old = Some("UPower daemon version 1.91.4\n");
+
+    assert_eq!(kbd_keys(&sys, new).level, Level::Warn, "module missing");
+    std::fs::create_dir_all(root.join("sys/module/ite8291_mono")).unwrap();
+    assert_eq!(
+      kbd_keys(&sys, new).level,
+      Level::Pass,
+      "driver before key_step"
+    );
+    put(&root, KEY_STEP, "0\n");
+    assert_eq!(
+      kbd_keys(&sys, old).level,
+      Level::Pass,
+      "desktop handles them"
+    );
+    put(&root, KEY_STEP, "10\n");
+    assert_eq!(kbd_keys(&sys, new).level, Level::Pass);
+    let item = kbd_keys(&sys, old);
+    assert_eq!(item.level, Level::Warn);
+    assert!(item.detail.contains("UPower 1.91.4"), "{}", item.detail);
+    assert_eq!(kbd_keys(&sys, None).level, Level::Warn);
+  }
+
+  #[test]
   fn parses_powerprofilesctl() {
     let ok = "* balanced:\n    CpuDriver:\tamd_pstate\n    PlatformDriver:\tplatform_profile\n";
     assert!(ppd_uses_platform_profile(ok));
@@ -393,6 +501,7 @@ mod tests {
     let probes = Probes {
       dkms_status: Some(format!("recoil16/1.0.0, {release}, x86_64: installed\n")),
       powerprofilesctl: None,
+      upower: None,
     };
     let items = evaluate(&sys, release, &probes);
     let level = |name: &str| items.iter().find(|i| i.name == name).unwrap().level;

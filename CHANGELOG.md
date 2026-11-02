@@ -10,6 +10,22 @@ and the drivers shared one version.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-02
+
+### Added
+
+- `recoil16ctl check`: a `kbd keys` line saying who handles Fn+F6 / Fn+F7.
+  recoil16 1.5.0 handles them in the driver by default (`key_step=10`); the
+  desktop's indicator and slider then need UPower 1.91.5 or newer, and the
+  check warns if the installed UPower is older.
+
+### Changed
+
+- `recoil16ctl check`: the manual Fn+F6 / Fn+F7 check includes the login
+  screen.
+- README: a "use at your own risk" notice (tested only on the PCSpecialist
+  Recoil 16 AMD; no warranty).
+
 ## [1.4.0] - 2026-09-30
 
 ### Changed
@@ -107,7 +123,8 @@ the UPower issue above breaks.
   keyboard locks and screen rotation, with man pages and shell completions.
 - DKMS packaging, Arch PKGBUILD, install scripts and a KDE shortcut for Sc.
 
-[Unreleased]: https://github.com/amad3v/recoil16ctl/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/amad3v/recoil16ctl/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/amad3v/recoil16ctl/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/amad3v/recoil16ctl/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/amad3v/recoil16ctl/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/amad3v/recoil16ctl/compare/v1.2.0...v1.2.1
