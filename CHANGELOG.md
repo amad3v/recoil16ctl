@@ -8,8 +8,6 @@ Releases up to 1.3.0 were made from the
 [recoil16](https://github.com/amad3v/recoil16) repository, where recoil16ctl
 and the drivers shared one version.
 
-## [Unreleased]
-
 ## [1.5.0] - 2026-11-02
 
 ### Added
@@ -123,7 +121,6 @@ the UPower issue above breaks.
   keyboard locks and screen rotation, with man pages and shell completions.
 - DKMS packaging, Arch PKGBUILD, install scripts and a KDE shortcut for Sc.
 
-[Unreleased]: https://github.com/amad3v/recoil16ctl/compare/v1.5.0...HEAD
 [1.5.0]: https://github.com/amad3v/recoil16ctl/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/amad3v/recoil16ctl/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/amad3v/recoil16ctl/compare/v1.2.1...v1.3.0
